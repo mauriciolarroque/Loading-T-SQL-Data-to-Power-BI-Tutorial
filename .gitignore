@@ -1,0 +1,8 @@
+# Mac
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Power BI files (binary, too large for git)
+*.pbix
