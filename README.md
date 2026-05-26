@@ -1,289 +1,256 @@
-# Loading T-SQL Data to Power BI — Full Project Walkthrough
+# Loading T-SQL Data to Power BI
 
-**Database:** `warehouse_mockup` | **Tools:** SQL Server 2022, SSMS, sqlcmd, Power BI Desktop | **OS:** Windows (with Mac notes where relevant)
+This project walks through setting up a SQL Server database on Windows and connecting it to Power BI for live reporting. It covers environment setup, schema design, data loading, analytical view creation, and dashboard connection — start to finish, with everything you need included in the repo.
 
----
+The database models a multi-warehouse distribution operation: suppliers, products, employees, purchase orders, inventory, outbound fulfillment, and stock movements across five warehouses. It's a realistic enough domain to write meaningful queries at every level, and the included practice set covers basic SELECT through window functions and CTEs. All scripts run via sqlcmd from the Windows terminal and are designed to be executed in sequence.
 
-## Project Overview
-
-This project documents the full process of building a warehouse management analytics system from scratch on a fresh Windows machine — starting from zero installed tools, through database design, scripted data loading, T-SQL view creation, and ending with a live Power BI dashboard connected directly to SQL Server.
-
-Everything in this walkthrough was done in real time: every install issue, error, and fix is documented as it happened. The result is a complete, repeatable workflow that anyone can follow to go from a blank Windows machine to a working BI dashboard backed by a properly designed relational database.
+Windows is required for this guide — SQL Server Developer Edition and Power BI Desktop are both Windows-native. Mac users can run SQL Server locally via Docker and connect through VS Code with the MSSQL extension, which is a solid alternative worth exploring.
 
 ---
 
-## Part 1 — Environment Setup
+## What You'll Build
 
-### Starting Point
-
-Fresh Windows machine. No SQL Server, no SSMS, no development tools. Coming from a Mac/Postgres background, so the mental model shifts are documented throughout.
-
-**Key differences from Mac/Postgres:**
-
-| Concept | Mac / Postgres | Windows / SQL Server |
-|---|---|---|
-| Start server | `brew services start postgresql` | `net start MSSQLSERVER` (or auto-starts on boot) |
-| CLI tool | `psql -U postgres` | `sqlcmd -S localhost` |
-| Execute query | Semicolon + Enter | `GO` on its own line |
-| GUI tool | pgAdmin / TablePlus | SSMS |
-| Root user | `postgres` | `sa` |
-| Default port | 5432 | 1433 |
-| Config files | `/usr/local/var/postgres/` | SQL Server Configuration Manager (GUI) |
+By the end of this guide you will have a SQL Server database called `warehouse_mockup` with 14 fully populated tables, five analytical views built on top of that data, and a Power BI Desktop report connected directly to those views and ready for dashboard development. You will also have a reusable Windows CLI cheatsheet for managing SQL Server day to day, and a set of 20 practice T-SQL queries you can run against the live database.
 
 ---
 
-### Step 1 — Verify winget
+## Prerequisites
 
-`winget` is Windows' built-in package manager — the equivalent of `brew` on Mac. Verified it was already available:
+This project is designed for Windows — SQL Server Developer Edition and Power BI Desktop are both Windows-native tools. If you're on a Mac, the closest equivalent setup would use Docker to run SQL Server locally and VS Code with the MSSQL extension as your GUI, though that workflow isn't covered here.
+
+You will also need **Git** installed before you can clone the repository. You can check whether it's already available by running:
+
+```powershell
+git --version
+```
+
+If Git isn't installed yet, you can add it through winget:
+
+```powershell
+winget install Git.Git
+```
+
+Close and reopen Windows Terminal after the install completes so the PATH updates correctly.
+
+---
+
+## Quickstart — Install Everything at Once
+
+If you'd like to get all the required tools installed in a single step, open Windows Terminal as Administrator (`Win + X → A`) and run the setup script included in the repo:
+
+```powershell
+.\setup.ps1
+```
+
+This will install SQL Server Developer Edition, SSMS, sqlcmd, and Power BI Desktop via winget, and will also add SSMS to your system PATH so it's accessible from any terminal window. Once the script finishes, close and reopen Windows Terminal and skip ahead to **Part 2**.
+
+If you'd prefer to install each tool manually, or if you run into issues with the script, Part 1 walks through every step individually.
+
+---
+
+## Part 1 — Installing the Required Tools
+
+### 1.1 — Verify winget is available
+
+`winget` is the Windows package manager that comes built into Windows 10 and 11 — it works similarly to `brew` on Mac and lets you install software directly from the terminal. Before installing anything else, confirm it's working:
 
 ```powershell
 winget --version
-# v1.28.240
 ```
 
-If it's missing, it comes bundled with the **App Installer** package from the Microsoft Store.
+If a version number prints out (for example, `v1.28.240`), you're ready to go. If the command isn't recognized, open the Microsoft Store, search for "App Installer", and update it from there.
 
----
+### 1.2 — Install SQL Server Developer Edition
 
-### Step 2 — Install SQL Server Developer Edition
-
-SQL Server Developer Edition is the full-featured version, free for development and non-production use.
+SQL Server Developer Edition is the full-featured version of SQL Server, available for free for development and non-production use. Install it with:
 
 ```powershell
 winget install Microsoft.SQLServer.2022.Developer
 ```
 
-When prompted about the Microsoft Store source agreement, type `Y` — this is standard on any fresh Windows machine and is legitimate. The download is ~1.17GB pulled from Microsoft's official servers.
+When Windows asks whether you agree to the Microsoft Store source terms, type `Y` and press Enter — this is a standard prompt on any fresh Windows machine and is completely normal.
 
-When the GUI installer launches:
+The download is around 1.17GB, so it will take a few minutes depending on your connection. Once the download completes, a GUI installer will launch automatically. When it does, make the following selections:
 
 | Prompt | What to select |
 |---|---|
-| Installation type | **Custom** (not Basic) |
-| Authentication mode | **Mixed Mode** (enables both Windows Auth and SQL logins) |
-| SA password | Set a strong one and write it down |
-| Instance name | Leave as `MSSQLSERVER` (default) |
+| Installation type | **Custom** |
+| Authentication mode | **Mixed Mode** |
+| SA password | Set a strong password and write it down somewhere safe |
+| Instance name | Leave as `MSSQLSERVER` |
 
-**Issue encountered:** The installer GUI closed before we could interact with it. Solution was to locate and relaunch the setup directly:
+> **If the installer window disappears before you can interact with it**, the SQL Server engine may have already installed silently in the background. Move on to step 1.4 to verify it's running.
+>
+> **If winget appears to be reinstalling everything from scratch**, stop it with `Ctrl + C` and launch the installer directly instead:
+> ```powershell
+> & "C:\SQLServerFull\Setup.exe"
+> ```
 
-```powershell
-& "C:\SQLServerFull\Setup.exe"
-```
+### 1.3 — Install SSMS
 
-Turned out SQL Server was already installed — the initial install had completed in the background. Running `sqlcmd -S localhost` and getting `1>` confirmed the engine was up.
-
----
-
-### Step 3 — Install SSMS (GUI Tool)
-
-SSMS = SQL Server Management Studio. The standard GUI for SQL Server, equivalent to pgAdmin or TablePlus on Mac.
-
-**First attempt via winget failed** with exit code 1626 (corrupted installer cached by winget):
+SSMS (SQL Server Management Studio) is the standard GUI tool for managing SQL Server — it lets you browse databases, run queries, inspect tables, and manage users through a visual interface.
 
 ```powershell
 winget install Microsoft.SQLServerManagementStudio
-# Installer failed with exit code: 1626
 ```
 
-**Solution:** Downloaded fresh from the official Microsoft shortlink and ran it manually as Administrator:
+**If the install fails with exit code 1626**, this means the installer package that winget downloaded was corrupted. The straightforward fix is to download a fresh copy directly from Microsoft and run it manually:
 
-```
-https://aka.ms/ssmsfullsetup
-```
+1. Go to `https://aka.ms/ssmsfullsetup` in your browser and download `SSMS-Setup-ENU.exe`
 
-> **Note on `aka.ms`:** This is Microsoft's official URL shortener — only Microsoft can create links on this domain. If you see `aka.ms/anything` it's a Microsoft-created link going to a Microsoft destination, equivalent to `apple.co` for Apple.
+   > `aka.ms` is Microsoft's official URL shortener — it works the same way `apple.co` does for Apple. Only Microsoft can create links on that domain, so any `aka.ms` link is going to a Microsoft destination.
+
+2. Once the file is in your Downloads folder, run it as Administrator:
 
 ```powershell
 Start-Process "$env:USERPROFILE\Downloads\SSMS-Setup-ENU.exe" -Verb RunAs
 ```
 
-The installer showed "Repair / Uninstall / Close" — meaning SSMS was already installed on the machine. Closed and launched directly.
+If the installer opens and shows options for **Repair**, **Uninstall**, or **Close**, that means SSMS is already installed on the machine. Click Close and move on.
 
----
+### 1.4 — Install sqlcmd
 
-### Step 4 — Launch SSMS from CLI
-
-```powershell
-SSMS.exe
-```
-
-> SSMS.exe gets added to PATH during install, so this works from any terminal.
-
-**Connection settings used:**
-
-| Field | Value |
-|---|---|
-| Server name | `localhost` (or the machine's hostname — both work) |
-| Authentication | Windows Authentication |
-| Encryption | Mandatory (default) |
-| Trust server certificate | ✅ Checked |
-
-Windows Authentication logs in as the current Windows user — no username or password needed for local connections. Encryption set to Mandatory with Trust Server Certificate checked is fine for local dev since SQL Server generates a self-signed cert automatically.
-
----
-
-### Step 5 — Install sqlcmd
-
-sqlcmd is a standalone CLI tool for running T-SQL from the terminal — the equivalent of `psql` on Postgres.
+sqlcmd is the command-line tool for connecting to SQL Server and running T-SQL directly from the terminal — it's the Windows equivalent of `psql` on Postgres.
 
 ```powershell
 winget install Microsoft.Sqlcmd
 ```
 
-After install, close and reopen the terminal so PATH updates, then verify:
+After the install finishes, close and reopen Windows Terminal to make sure the PATH is updated, then verify it's working:
 
 ```powershell
 sqlcmd --version
 ```
 
-**Key sqlcmd behavior (different from psql):** Statements don't execute immediately. They go into a buffer. You must type `GO` on a new line and press Enter to execute. This is the most common source of confusion for anyone coming from Postgres.
+### 1.5 — Verify SQL Server is running
 
----
-
-### Step 6 — Add `admin` shortcut to PowerShell profile
-
-Several commands (`net start`, `net stop`) require an admin terminal. Added a convenience function to the PowerShell profile to open an admin terminal in one word:
-
-```powershell
-# Check if profile exists
-Test-Path $PROFILE
-
-# If True:
-Add-Content $PROFILE "`nfunction admin { Start-Process wt -Verb RunAs }"
-
-# If False:
-New-Item -Path $PROFILE -Force | Out-Null; Add-Content $PROFILE "`nfunction admin { Start-Process wt -Verb RunAs }"
-
-# Reload profile
-. $PROFILE
-```
-
-After this, typing `admin` in any terminal opens a new admin terminal window.
-
----
-
-## Part 2 — Database Design
-
-### Domain Selection
-
-The goal was a realistic, business-focused dataset — not toy data. Options considered:
-
-- Basic e-commerce (customers, orders, products) — common but thin
-- Football/sports — rejected as too domain-specific
-- **Warehouse management** — selected for depth and realism
-
-Warehouse management was chosen because it covers a wide range of SQL concepts naturally: multi-level JOINs, self-referencing tables, date math, status distributions, partial fulfillments, and enough entity relationships to write meaningful queries at every skill level.
-
----
-
-### Schema Design — 14 Tables
-
-The schema was designed in layers:
-
-**Physical structure:**
-- `warehouses` — 5 warehouses across the US, each with a manager and capacity
-- `zones` — 3 zones per warehouse (receiving, storage, shipping)
-- `aisles` — aisle codes within each zone
-- `bin_locations` — individual storage bins with weight limits and active status
-
-**Supplier and product layer:**
-- `suppliers` — 15 suppliers with country and lead time data
-- `products` — 50 products across 7 categories with SKU, weight, and price
-
-**Inventory:**
-- `inventory` — current quantity per product per bin location
-
-**Procurement:**
-- `purchase_orders` — orders placed with suppliers, assigned to warehouses
-- `purchase_order_items` — line items with ordered vs received quantities
-- `inbound_shipments` — actual receipt records linked to POs and receiving employees
-
-**Fulfillment:**
-- `outbound_orders` — customer orders with status and shipped date
-- `outbound_order_items` — line items pulled from specific bin locations
-
-**Operations:**
-- `stock_movements` — every receive, pick, transfer, and adjustment event
-- `employees` — 25 employees with role, warehouse assignment, manager hierarchy, and salary
-
----
-
-### Key Design Decisions
-
-**Circular foreign key between `employees` and `warehouses`:**
-
-`warehouses` references `employees` (manager_id) and `employees` references `warehouses` (warehouse_id). This creates a circular dependency that can't be resolved by table creation order alone. The solution: create `employees` first with `warehouse_id` as nullable and no FK constraint, create `warehouses` next, then use `ALTER TABLE` to add the FK after both tables exist:
-
-```sql
-ALTER TABLE employees
-ADD CONSTRAINT fk_employees_warehouse
-FOREIGN KEY (warehouse_id) REFERENCES warehouses(id);
-```
-
-**Self-referencing `employees` table:**
-
-`manager_id` references `employees(id)` — the table references itself for the management hierarchy. Solved by inserting employees in strict hierarchy order: regional directors first with `manager_id = NULL`, then warehouse managers referencing director IDs, then supervisors, then workers. Explicit IDs make every reference predictable before the script runs.
-
-**Insertion dependency order:**
-
-Tables were inserted in strict dependency order to satisfy all foreign key constraints without disabling them:
-
-1. employees (top-level managers first, then workers)
-2. warehouses
-3. zones
-4. aisles
-5. bin_locations
-6. suppliers
-7. products
-8. purchase_orders
-9. purchase_order_items
-10. inbound_shipments
-11. inventory
-12. outbound_orders
-13. outbound_order_items
-14. stock_movements
-
----
-
-### Realism Decisions
-
-Several choices were made to make the data analytically meaningful rather than trivially clean:
-
-**Temporal consistency:** PO dates precede expected dates (order_date + supplier lead_time_days). Expected dates precede received dates. Outbound orders ship after they're placed. All dates fall within 2024 with Q4 volume heavier than other quarters to reflect a realistic holiday season spike.
-
-**Status distribution:** Not all orders are completed. Mix of received, in_transit, pending, and cancelled statuses on purchase orders. Mix of pending, picking, packed, shipped, and cancelled on outbound orders.
-
-**Partial fulfillments:** Some PO items have `quantity_received < quantity_ordered` — realistic supplier shortfalls.
-
-**Intentional NULLs:** Some nullable columns left NULL where real data would be empty (e.g. `shipped_date` on an order that hasn't shipped yet, `contact_email` for suppliers who didn't provide one).
-
-**Out-of-stock products:** Some products have zero inventory — allows LEFT JOIN practice to surface them.
-
----
-
-## Part 3 — Data Loading
-
-### Script Structure
-
-Split into 3 scripts to isolate concerns and make debugging easier. If script 3 fails, the schema and reference data from scripts 1 and 2 don't need to be rebuilt.
-
-**Script 1 — Schema:** All `CREATE TABLE` statements with constraints, foreign keys, data types.
-
-**Script 2 — Reference data:** Warehouses, employees, zones, aisles, bin locations, suppliers, products. Static lookup data that everything else depends on.
-
-**Script 3 — Transactional data:** Purchase orders, shipments, inventory, outbound orders, stock movements. The bulk of the rows with all the logical consistency baked in.
-
-**Script 4 — Views:** 5 analytical views for Power BI (covered in Part 4).
-
----
-
-### Running the Scripts
-
-Create the database first:
+With sqlcmd installed, you can confirm the SQL Server engine is up and accepting connections:
 
 ```powershell
 sqlcmd -S localhost
 ```
+
+If the engine is running, you'll see `1>` — that's your interactive T-SQL prompt. Type `EXIT` to leave it for now.
+
+If the connection fails, the SQL Server service may not have started yet. Open an admin terminal (`Win + X → A`) and start it manually:
+
+```powershell
+net start MSSQLSERVER
+```
+
+> **Important — coming from Postgres or MySQL:** In sqlcmd, pressing Enter doesn't execute a statement. Statements accumulate in a buffer until you type `GO` on its own line and press Enter. This is the single most common source of confusion for anyone new to SQL Server, so keep it in mind as you work through this guide.
+
+### 1.6 — Add SSMS to PATH
+
+Adding SSMS to your system PATH means you can launch it from any terminal window by simply typing `SSMS.exe`, without needing to know or remember the full installation path. Open an admin terminal (`Win + X → A`) and run:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("Path", [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";C:\Program Files\Microsoft SQL Server Management Studio 21\Release\Common7\IDE", [System.EnvironmentVariableTarget]::Machine)
+```
+
+Close and reopen Windows Terminal, then confirm it worked:
+
+```powershell
+SSMS.exe
+```
+
+SSMS should launch. If it doesn't open, the install path on your machine may be slightly different. Run this to find the correct one:
+
+```powershell
+Get-ChildItem "C:\Program Files", "C:\Program Files (x86)" -Recurse -Filter "Ssms.exe" 2>$null
+```
+
+Take whatever path it returns and substitute it into the `SetEnvironmentVariable` command above.
+
+> **Note:** If you have SSMS 20 rather than SSMS 21, the install path will be under `C:\Program Files (x86)` instead of `C:\Program Files`. Make sure the path in the command matches your actual version.
+
+### 1.7 — Set up the `admin` shortcut
+
+A number of commands throughout this guide need to run in an elevated (Administrator) terminal. Rather than hunting through menus every time, you can add a shortcut to your PowerShell profile that opens an admin terminal with a single word.
+
+First, check whether a PowerShell profile already exists:
+
+```powershell
+Test-Path $PROFILE
+```
+
+If it returns `True`, append the function to the existing profile:
+
+```powershell
+Add-Content $PROFILE "`nfunction admin { Start-Process wt -Verb RunAs }"
+```
+
+If it returns `False`, create the profile file first and then add the function:
+
+```powershell
+New-Item -Path $PROFILE -Force | Out-Null; Add-Content $PROFILE "`nfunction admin { Start-Process wt -Verb RunAs }"
+```
+
+Reload the profile to make the change take effect immediately:
+
+```powershell
+. $PROFILE
+```
+
+From this point forward, typing `admin` in any terminal will open a new admin terminal window.
+
+### 1.8 — Install Power BI Desktop
+
+```powershell
+winget install Microsoft.PowerBIDesktop
+```
+
+Alternatively, you can download it directly from `https://powerbi.microsoft.com/desktop` if you prefer.
+
+---
+
+## Part 2 — Connect to SSMS
+
+With everything installed, launch SSMS and connect to your local SQL Server instance:
+
+```powershell
+SSMS.exe
+```
+
+When the connection dialog opens, fill it in as follows:
+
+| Field | Value |
+|---|---|
+| Server name | `localhost` (your machine's hostname will also work) |
+| Authentication | Windows Authentication |
+| Encryption | Mandatory |
+| Trust server certificate | ✅ Checked |
+
+Click **Connect**. Your server should appear in the Object Explorer panel on the left side of the screen, which means you're connected and ready to work.
+
+> **If you get an SSL certificate error after clicking Connect**, click **Options >>** in the connection dialog, change Encryption to `Optional`, make sure Trust server certificate is checked, and try connecting again. This occasionally comes up on fresh installs and is perfectly fine for local development.
+
+---
+
+## Part 3 — Clone the Repository
+
+Navigate to your Documents folder and clone the project:
+
+```powershell
+cd C:\Users\%USERNAME%\Documents
+git clone https://github.com/mauriciolarroque/Loading-T-SQL-Data-to-Power-BI-Tutorial.git
+cd Loading-T-SQL-Data-to-Power-BI-Tutorial
+```
+
+Once cloned, all four SQL scripts will be available at:
+`C:\Users\%USERNAME%\Documents\Loading-T-SQL-Data-to-Power-BI-Tutorial\scripts\`
+
+---
+
+## Part 4 — Create the Database
+
+Open a connection to SQL Server via sqlcmd:
+
+```powershell
+sqlcmd -S localhost
+```
+
+At the prompt, create the database and exit:
 
 ```sql
 CREATE DATABASE warehouse_mockup;
@@ -291,338 +258,230 @@ GO
 EXIT
 ```
 
-Then run each script in order:
+To confirm the database was created successfully, you can run a quick check:
 
 ```powershell
-sqlcmd -S localhost -d warehouse_mockup -i C:\Users\%USERNAME%\Documents\warehouse-mockup\script1_schema.sql
-sqlcmd -S localhost -d warehouse_mockup -i C:\Users\%USERNAME%\Documents\warehouse-mockup\script2_reference_data.sql
-sqlcmd -S localhost -d warehouse_mockup -i C:\Users\%USERNAME%\Documents\warehouse-mockup\script3_transactional_data.sql
-```
-
-**Successful output from script 2:**
-
-```
-Changed database context to 'warehouse_mockup'.
-(25 rows affected)   ← employees
-(5 rows affected)    ← warehouses
-(10 rows affected)   ← warehouse assignments updated
-(5 rows affected)    ← zones (partial)
-(40 rows affected)   ← aisles
-(100 rows affected)  ← bin locations
-(15 rows affected)   ← suppliers
-(50 rows affected)   ← products
-```
-
-Total dataset: ~7,000 rows across all 14 tables.
-
----
-
-### File Path Convention
-
-Scripts reference `C:\Users\%USERNAME%\Documents\warehouse-mockup\` throughout. This path:
-- Exists by default on any Windows machine
-- Is user-scoped — no admin rights required to read or write
-- Maps directly to where the cloned repo would live
-
-> **Note:** `%USERNAME%` is a Windows environment variable — it resolves automatically to the current user's name in PowerShell and Command Prompt.
-
----
-
-## Part 4 — Analytical Views
-
-### Why Views Instead of Raw Tables in Power BI
-
-The transformation layer was built in SQL Server as views rather than in Power BI for three reasons:
-
-1. Logic lives in the database — not scattered across Power BI's query editor
-2. Any consumer of the view gets consistent, pre-validated numbers
-3. When underlying data changes, the view reflects it automatically without modifying the BI layer
-
-A view looks like a table to Power BI. Every dataset refresh re-executes the view logic against live SQL Server data.
-
----
-
-### The 5 Views
-
-**View 1 — `vw_stock_levels`**
-
-Current inventory per product with stock status classification:
-
-```sql
-CASE
-    WHEN COALESCE(i.quantity, 0) = 0 THEN 'Out of Stock'
-    WHEN COALESCE(i.quantity, 0) < 10 THEN 'Low Stock'
-    WHEN COALESCE(i.quantity, 0) < 50 THEN 'Moderate'
-    ELSE 'Well Stocked'
-END AS stock_status
-```
-
-Uses `COALESCE` to handle products with no inventory record (returns 0 instead of NULL). Joins through the full physical hierarchy: inventory → bin_locations → aisles → zones → warehouses.
-
----
-
-**View 2 — `vw_supplier_performance`**
-
-On-time delivery rate, average days variance, and order counts per supplier:
-
-```sql
-CASE
-    WHEN COUNT(CASE WHEN po.status = 'received' THEN 1 END) = 0 THEN NULL
-    ELSE CAST(
-        SUM(CASE WHEN ins.received_date <= po.expected_date THEN 1 ELSE 0 END) * 100.0
-        / COUNT(CASE WHEN po.status = 'received' THEN 1 END)
-    AS DECIMAL(5,2))
-END AS on_time_rate_pct
-```
-
-Guards against division by zero for suppliers with no received orders. Uses conditional aggregation with `CASE WHEN` inside `SUM` and `COUNT` — a common T-SQL pattern for pivot-style metrics without actual PIVOT syntax.
-
----
-
-**View 3 — `vw_employee_activity`**
-
-Shipments received and stock movements broken down by movement type per employee:
-
-```sql
-SUM(CASE WHEN sm.movement_type = 'receive' THEN 1 ELSE 0 END) AS receive_movements,
-SUM(CASE WHEN sm.movement_type = 'pick' THEN 1 ELSE 0 END) AS pick_movements,
-SUM(CASE WHEN sm.movement_type = 'transfer' THEN 1 ELSE 0 END) AS transfer_movements,
-SUM(CASE WHEN sm.movement_type = 'adjustment' THEN 1 ELSE 0 END) AS adjustment_movements
+sqlcmd -S localhost -Q "SELECT name FROM sys.databases WHERE name = 'warehouse_mockup';"
 ```
 
 ---
 
-**View 4 — `vw_order_fulfillment`**
+## Part 5 — Run the Scripts
 
-Outbound order status with days-to-ship calculation and overdue flagging:
+The project data is split across four scripts that need to be run in order. Each script depends on the one before it, so it's important not to skip ahead or run them out of sequence.
 
-```sql
-CASE
-    WHEN oo.status NOT IN ('shipped', 'cancelled') AND DATEDIFF(day, oo.order_date, GETDATE()) > 7
-    THEN 'Overdue'
-    WHEN oo.status NOT IN ('shipped', 'cancelled')
-    THEN 'In Progress'
-    ELSE oo.status
-END AS fulfillment_flag
-```
+### Script 1 — Schema
 
-Uses `GETDATE()` to calculate whether open orders are overdue relative to today's date — a live calculation that changes every time the view is queried.
-
----
-
-**View 5 — `vw_warehouse_throughput`**
-
-Monthly inbound vs outbound volume per warehouse using `UNION ALL`:
-
-```sql
--- Inbound
-SELECT w.name, YEAR(po.order_date), MONTH(po.order_date),
-       COUNT(DISTINCT po.id) AS inbound_orders,
-       SUM(poi.quantity_received) AS units_received,
-       SUM(poi.quantity_received * poi.unit_cost) AS inbound_cost
-FROM warehouses w
-LEFT JOIN purchase_orders po ON w.id = po.warehouse_id AND po.status = 'received'
-...
-
-UNION ALL
-
--- Outbound
-SELECT w.name, YEAR(oo.order_date), MONTH(oo.order_date),
-       COUNT(DISTINCT oo.id) AS outbound_orders,
-       SUM(oi.quantity) AS units_shipped,
-       SUM(oi.quantity * p.unit_price) AS outbound_revenue
-FROM warehouses w
-LEFT JOIN outbound_orders oo ON w.id = oo.warehouse_id AND oo.status = 'shipped'
-...
-```
-
-`UNION ALL` combines two separate aggregations (inbound procurement and outbound fulfillment) into a single result set. This view took slightly longer to load in Power BI due to the dual aggregation — expected behavior.
-
----
-
-### Running the Views Script
-
-Via SSMS (GUI):
-1. Open SSMS → connect to localhost
-2. Click **New Query**
-3. Make sure the database dropdown shows `warehouse_mockup`
-4. Paste the contents of `script4_views.sql`
-5. Press **F5**
-
-Via sqlcmd (CLI):
+This script creates all 14 tables along with their data types, constraints, and foreign key relationships.
 
 ```powershell
-sqlcmd -S localhost -d warehouse_mockup -i C:\Users\%USERNAME%\Documents\warehouse-mockup\script4_views.sql
+sqlcmd -S localhost -d warehouse_mockup -i "C:\Users\%USERNAME%\Documents\Loading-T-SQL-Data-to-Power-BI-Tutorial\scripts\script1_schema.sql"
 ```
 
-**Issue encountered:** After running the script, querying `vw_stock_levels` returned "Invalid object name." Root cause: connected to the wrong database (default database instead of `warehouse_mockup`). Fix:
+A successful run will print `Changed database context to 'warehouse_mockup'.` with no errors below it.
+
+### Script 2 — Reference Data
+
+This script populates the static lookup tables — warehouses, employees, zones, aisles, bin locations, suppliers, and products. These are the records that all the transactional data in Script 3 will reference.
+
+```powershell
+sqlcmd -S localhost -d warehouse_mockup -i "C:\Users\%USERNAME%\Documents\Loading-T-SQL-Data-to-Power-BI-Tutorial\scripts\script2_reference_data.sql"
+```
+
+After it completes, you should see row counts like these confirming everything loaded correctly:
+
+```
+(25 rows affected)    ← employees
+(5 rows affected)     ← warehouses
+(10 rows affected)    ← employee warehouse assignments updated
+(15 rows affected)    ← zones
+(40 rows affected)    ← aisles
+(100 rows affected)   ← bin locations
+(15 rows affected)    ← suppliers
+(50 rows affected)    ← products
+```
+
+### Script 3 — Transactional Data
+
+This is the main data load — purchase orders, inbound shipments, inventory records, outbound orders, and stock movements. Approximately 7,000 rows in total, spread across the full 2024 calendar year with realistic status distributions, partial fulfillments, and intentional edge cases.
+
+```powershell
+sqlcmd -S localhost -d warehouse_mockup -i "C:\Users\%USERNAME%\Documents\Loading-T-SQL-Data-to-Power-BI-Tutorial\scripts\script3_transactional_data.sql"
+```
+
+### Script 4 — Analytical Views
+
+This script creates five T-SQL views on top of the data. These views handle all the joins, aggregations, and business logic, so that Power BI can connect directly to clean, pre-shaped data without needing any transformation on the BI side.
+
+```powershell
+sqlcmd -S localhost -d warehouse_mockup -i "C:\Users\%USERNAME%\Documents\Loading-T-SQL-Data-to-Power-BI-Tutorial\scripts\script4_views.sql"
+```
+
+Again, a clean run will print `Changed database context to 'warehouse_mockup'.` with no errors.
+
+---
+
+## Part 6 — Verify the Views
+
+Before connecting Power BI, it's worth confirming that all five views are returning data as expected. Connect to the database:
 
 ```powershell
 sqlcmd -S localhost -d warehouse_mockup
 ```
 
-Always specify `-d warehouse_mockup` explicitly when connecting via sqlcmd.
-
----
-
-### Verifying All Views
+Then query each view in turn:
 
 ```sql
 SELECT * FROM vw_stock_levels ORDER BY quantity_on_hand ASC;
 GO
+```
 
+```sql
 SELECT * FROM vw_supplier_performance ORDER BY on_time_rate_pct ASC;
 GO
+```
 
+```sql
 SELECT * FROM vw_employee_activity ORDER BY stock_movements DESC;
 GO
+```
 
+```sql
 SELECT * FROM vw_order_fulfillment ORDER BY order_date ASC;
 GO
+```
 
+```sql
 SELECT * FROM vw_warehouse_throughput ORDER BY warehouse_name, year, month;
 GO
 ```
 
-All 5 returned data cleanly.
+All five should return populated result sets. If any of them come back with an "Invalid object name" error, it most likely means you're connected to the wrong database — double check that you included `-d warehouse_mockup` in your sqlcmd connection command.
 
 ---
 
-## Part 5 — Power BI Integration
+## Part 7 — Connect Power BI to SQL Server
 
-### Check if Power BI Desktop is Installed
+### 7.1 — Launch Power BI Desktop
 
-```powershell
-Get-StartApps | Where-Object {$_.Name -like "*Power BI*"}
-```
-
-Returned:
-
-```
-Name             AppID
-----             -----
-Power BI Desktop Microsoft.MicrosoftPowerBIDesktop_8wekyb3d8bbwe!...
-```
-
-### Launch Power BI from CLI
+You can launch Power BI from the terminal with:
 
 ```powershell
 Start-Process "shell:AppsFolder\Microsoft.MicrosoftPowerBIDesktop_8wekyb3d8bbwe!Microsoft.MicrosoftPowerBIDesktop"
 ```
 
+Or simply search for "Power BI Desktop" in the Windows Start menu.
+
+### 7.2 — Connect to the Database
+
+Once Power BI is open, click **Get Data** in the top toolbar, search for **SQL Server Database**, and select it. In the connection dialog, enter the following:
+
+| Field | Value |
+|---|---|
+| Server | `localhost` |
+| Database | Leave blank |
+| Data Connectivity mode | Import |
+
+Click **OK** to proceed.
+
+### 7.3 — Load the Views
+
+Power BI will open a Navigator showing all the tables and views available in `warehouse_mockup`. Select all five analytical views:
+
+- `vw_stock_levels`
+- `vw_supplier_performance`
+- `vw_employee_activity`
+- `vw_order_fulfillment`
+- `vw_warehouse_throughput`
+
+Click **Load** to import them into Power BI.
+
+> `vw_warehouse_throughput` combines two separate aggregations using `UNION ALL` and may take a couple of minutes to load the first time. This is normal behavior — Power BI caches the data locally after the initial import, so subsequent refreshes will be noticeably faster.
+
+### 7.4 — Build Your First Visual
+
+With the data loaded, you're ready to start building. To create a simple bar chart showing total stock value by product category:
+
+1. Click the **Report view** icon in the left sidebar (it looks like a bar chart)
+2. In the Visualizations pane on the right, select **Bar chart**
+3. In the Data pane, expand `vw_stock_levels`
+4. Drag `category` into the Y-axis field
+5. Drag `stock_value` into the X-axis field
+
+You should now have a live horizontal bar chart backed by your SQL Server data. From here you can add additional visuals using any of the five views, apply filters and slicers, and build out a full dashboard.
+
 ---
 
-### Connecting Power BI to SQL Server
+## Part 8 — Practice Queries
 
-1. Click **Get Data** in the top toolbar
-2. Search for and select **SQL Server Database**
-3. Click **Connect**
-4. Server: `localhost`
-5. Database: leave blank (select in Navigator)
-6. Data Connectivity mode: **Import**
-7. Click **OK**
+The `docs` folder includes a file called `T-SQL Questions & Answers.md` with 20 practice queries written against the `warehouse_mockup` database. The questions are organized by concept and cover the full range of analytical SQL:
 
-Power BI connected and opened the Navigator showing all tables and views in `warehouse_mockup`.
+- Basic SELECT, WHERE, and ORDER BY filtering
+- INNER JOIN, LEFT JOIN, and multi-table joins across the full schema
+- Aggregate functions including COUNT, SUM, AVG, MIN, and MAX
+- GROUP BY with HAVING clauses for filtered aggregations
+- Correlated and non-correlated subqueries
+- Common Table Expressions using the WITH clause
+- Window functions including RANK and PARTITION BY
+- Date functions including DATEDIFF, MONTH, and YEAR
 
----
-
-### Loading the Views
-
-In the Navigator, checked all 5 views:
-
-- vw_stock_levels
-- vw_supplier_performance
-- vw_employee_activity
-- vw_order_fulfillment
-- vw_warehouse_throughput
-
-Clicked **Load**. The `vw_warehouse_throughput` view (which uses `UNION ALL`) took a few minutes to evaluate — this is expected on first load. Power BI caches the data locally after that, so subsequent refreshes are faster.
+Every query runs against the live loaded data and returns meaningful results, making them useful both as learning exercises and as reference examples for writing your own queries.
 
 ---
 
-### First Visual — Stock Value by Category
+## Database Schema
 
-1. Click **Report view** (bar chart icon in left sidebar)
-2. In the Visualizations pane, click **Bar chart**
-3. Expand **vw_stock_levels** in the Data pane
-4. Drag `category` → Y-axis
-5. Drag `stock_value` → X-axis
+The `warehouse_mockup` database contains 14 tables organized across four layers of the warehouse management domain:
 
-Result: horizontal bar chart showing total stock value per product category.
+**Physical structure** — the spatial layout of the warehouses themselves
+`warehouses` → `zones` → `aisles` → `bin_locations`
+
+**Supplier and product layer** — what's being stocked and where it comes from
+`suppliers` → `products` → `inventory`
+
+**Procurement** — the inbound supply chain from order to receipt
+`purchase_orders` → `purchase_order_items` → `inbound_shipments`
+
+**Fulfillment** — the outbound flow from customer order to shipment
+`outbound_orders` → `outbound_order_items`
+
+**Operations** — the people and activity that keeps everything moving
+`stock_movements` → `employees`
 
 ---
 
-### Power BI Automation (CLI Limitations)
-
-Building visuals in Power BI has no meaningful CLI equivalent — the report canvas is GUI-only. However, everything underneath Power BI can be automated:
+## Project Files
 
 ```
-SQL Server Agent (scheduled T-SQL jobs)
-→ updates data in SQL Server
-→ Power BI Service (scheduled refresh)
-→ dashboard always current for anyone with the link
+/
+├── README.md                          ← this file
+├── setup.ps1                          ← one-shot install script (run as Administrator)
+├── .gitignore
+│
+├── scripts/
+│   ├── script1_schema.sql             ← CREATE TABLE statements for all 14 tables
+│   ├── script2_reference_data.sql     ← warehouses, employees, suppliers, products
+│   ├── script3_transactional_data.sql ← orders, shipments, inventory, movements
+│   └── script4_views.sql              ← 5 analytical views for Power BI
+│
+├── docs/
+│   ├── T-SQL Questions & Answers.md   ← 20 practice queries with answers
+│   └── mssql-windows-commands.md      ← full Windows CLI cheatsheet
+│
+└── screenshots/
+    └── (Power BI dashboard screenshots)
 ```
 
-Tools for the automation layer:
-- **SQL Server Agent** — schedule T-SQL jobs to run at any interval
-- **Power BI REST API** — trigger dataset refreshes programmatically
-- **pbi-tools** — deploy Power BI reports to Power BI Service from CLI
-
-The GUI work in Power BI Desktop is a one-time build. Once published to Power BI Service, everything downstream can be automated.
-
 ---
 
-## Part 6 — T-SQL Practice Queries
+## Common Errors
 
-20 queries written against the warehouse data, covering the full T-SQL analytics spectrum. All queries are in `T-SQL Questions & Answers.md`.
-
-**Topics covered:**
-
-| Topic | Example |
-|---|---|
-| Basic SELECT / WHERE / ORDER BY | Products in the Tools category by price |
-| Multi-table JOINs | Purchase orders with supplier name and warehouse location |
-| LEFT JOIN (surfacing nulls) | Products with zero stock in inventory |
-| Aggregates (COUNT, SUM, AVG, MIN, MAX) | Inventory value per category, salary stats per role |
-| GROUP BY + HAVING | Customers with more than 3 outbound orders |
-| Correlated subqueries | Employees earning above average for their role |
-| Non-correlated subqueries | Suppliers who have never had a PO placed |
-| CTEs (WITH clause) | Warehouse inbound vs outbound totals side by side |
-| CTE + Window Function | Top 3 most stocked products using RANK |
-| PARTITION BY | Rank products by price within each category |
-| MAX OVER PARTITION BY | Salary gap from the top earner per role |
-| DATEDIFF | Days late or early for each supplier shipment |
-| MONTH / YEAR | Outbound orders shipped per month in 2024 |
-
----
-
-## Part 7 — Project Files
-
-| File | Description |
-|---|---|
-| `script1_schema.sql` | CREATE TABLE statements for all 14 tables |
-| `script2_reference_data.sql` | Warehouses, employees, zones, aisles, bins, suppliers, products |
-| `script3_transactional_data.sql` | Purchase orders, shipments, inventory, outbound orders, stock movements |
-| `script4_views.sql` | 5 analytical views for Power BI |
-| `T-SQL Questions & Answers.md` | 20 practice queries with answers |
-| `mssql-windows-commands.md` | Full Windows CLI cheatsheet for SSMS and SQL Server |
-| `README.md` | Setup and replication guide |
-
----
-
-## Skills Demonstrated
-
-- Relational database design with normalized schema, enforced referential integrity, and real-world edge cases (circular FKs, self-referencing hierarchy tables)
-- T-SQL scripting from schema creation through analytical view development
-- Handling partial fulfillments, intentional NULLs, and temporal consistency across ~7,000 rows of seed data
-- CLI-driven development workflow using sqlcmd and PowerShell on Windows
-- T-SQL analytical patterns: conditional aggregation, window functions, CTEs, date math, UNION ALL
-- BI tool integration — connecting SQL Server to Power BI and designing the transformation layer in SQL rather than the BI tool
-- Troubleshooting real installation issues on a fresh Windows environment
-- Version control and project documentation with Git and GitHub
-
----
-
-## Repository
-
-[github.com/YOUR_USERNAME/Loading-T-SQL-Data-to-Power-BI-Tutorial](https://github.com/YOUR_USERNAME/Loading-T-SQL-Data-to-Power-BI-Tutorial)
+| Error | Cause | Fix |
+|---|---|---|
+| `sqlcmd: command not found` | sqlcmd not installed or PATH not updated | Close and reopen terminal after install |
+| `Invalid object name 'vw_stock_levels'` | Connected to the wrong database | Add `-d warehouse_mockup` to the sqlcmd command |
+| `System error 5: Access is denied` | Command requires Administrator privileges | Open an admin terminal with `Win + X → A` |
+| `Requested registry access is not allowed` | SetEnvironmentVariable requires admin | Run the command in an admin terminal |
+| SSMS installer exit code 1626 | Corrupted winget installer cache | Download the installer manually from `aka.ms/ssmsfullsetup` |
+| SSL certificate error in SSMS | Self-signed certificate not trusted | Set Encryption to Optional and check Trust server certificate |
+| Power BI takes several minutes to load | `vw_warehouse_throughput` uses UNION ALL | Expected on first load — Power BI caches after the first run |
